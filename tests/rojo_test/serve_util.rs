@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use hyper_tungstenite::tungstenite::{connect, Message};
+use hyper_tungstenite::tungstenite::{connect, stream::MaybeTlsStream, Message};
 use rbx_dom_weak::types::Ref;
 
 use serde::{Deserialize, Serialize};
@@ -191,6 +191,10 @@ impl TestServeSession {
         let timeout = Duration::from_secs(10);
         let start = std::time::Instant::now();
 
+        if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
+            stream.set_read_timeout(Some(timeout))?;
+        }
+
         loop {
             if start.elapsed() > timeout {
                 return Err("Timeout waiting for packet from WebSocket".into());
@@ -215,7 +219,10 @@ impl TestServeSession {
                     continue;
                 }
                 Err(hyper_tungstenite::tungstenite::Error::Io(e))
-                    if e.kind() == std::io::ErrorKind::WouldBlock =>
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
                 {
                     // No data available yet, sleep a bit and try again
                     thread::sleep(Duration::from_millis(100));
