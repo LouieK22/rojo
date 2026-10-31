@@ -178,6 +178,29 @@ impl TestServeSession {
         Ok(deserialize_msgpack(&body).expect("Server returned malformed response"))
     }
 
+    pub fn wait_for_read(
+        &self,
+        id: Ref,
+        condition: impl Fn(&ReadResponse) -> bool,
+    ) -> ReadResponse<'_> {
+        let timeout = Duration::from_secs(10);
+        let start = std::time::Instant::now();
+
+        loop {
+            let response = self.get_api_read(id).unwrap();
+
+            if condition(&response) {
+                return response;
+            }
+
+            if start.elapsed() > timeout {
+                panic!("Timeout waiting for condition on /api/read");
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     pub fn get_api_socket_packet(
         &self,
         packet_type: SocketPacketType,

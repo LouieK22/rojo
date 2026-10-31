@@ -7,10 +7,10 @@ use tempfile::tempdir;
 
 use crate::rojo_test::{
     internable::InternAndRedact,
-    serve_util::{deserialize_msgpack, run_serve_test, serialize_to_xml_model},
+    serve_util::{deserialize_msgpack, run_serve_test, serialize_to_xml_model, TestServeSession},
 };
 
-use librojo::web_api::{SerializeResponse, SocketPacketType};
+use librojo::web_api::{ReadResponse, SerializeResponse, SocketPacketType};
 
 #[test]
 fn rejects_dns_rebinding_requests() {
@@ -838,4 +838,42 @@ fn parent_path_add_file() {
             read_response.intern_and_redact(&mut redactions, root_id)
         );
     });
+}
+
+#[test]
+fn remove_nested_folder() {
+    run_serve_test("remove_nested_folder", |session, _| {
+        assert_nested_folder_removed(&session, "src/nested");
+    });
+}
+
+#[test]
+fn parent_path_remove_nested_folder() {
+    run_serve_test("remove_nested_folder", |session, _| {
+        assert_nested_folder_removed(&session, "shared/nested");
+    });
+}
+
+/// A recursive delete removes children first, so their parents are already gone
+/// when their events are handled. The number of patches this produces is functionally
+/// a gacha game, which is why we just poll for results instead!
+fn assert_nested_folder_removed(session: &TestServeSession, folder: &str) {
+    let root_id = session.get_api_rojo().unwrap().root_instance_id;
+
+    fs::remove_dir_all(session.path().join(folder)).unwrap();
+
+    let read_response =
+        session.wait_for_read(root_id, |response| count_instances(response, "nested") == 1);
+
+    assert_eq!(count_instances(&read_response, "deep"), 1);
+    assert_eq!(count_instances(&read_response, "file"), 1);
+    assert_eq!(count_instances(&read_response, "keep"), 2);
+}
+
+fn count_instances(response: &ReadResponse, name: &str) -> usize {
+    response
+        .instances
+        .values()
+        .filter(|instance| instance.name == name)
+        .count()
 }
