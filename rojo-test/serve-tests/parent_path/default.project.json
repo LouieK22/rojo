@@ -1,0 +1,9 @@
+{
+  "name": "parent_path",
+  "tree": {
+    "$className": "Folder",
+    "Shared": {
+      "$path": "sibling/../shared"
+    }
+  }
+}

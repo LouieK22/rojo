@@ -775,3 +775,67 @@ fn forced_parent() {
         assert_snapshot!("forced_parent_serialize_model", model);
     });
 }
+
+#[test]
+fn parent_path_edit_file() {
+    run_serve_test("parent_path", |session, mut redactions| {
+        let info = session.get_api_rojo().unwrap();
+        let root_id = info.root_instance_id;
+
+        assert_yaml_snapshot!("parent_path_edit_file_info", redactions.redacted_yaml(info));
+
+        let read_response = session.get_api_read(root_id).unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_edit_file_all",
+            read_response.intern_and_redact(&mut redactions, root_id)
+        );
+
+        fs::write(session.path().join("shared/fire.txt"), "Watch Me").unwrap();
+
+        let socket_packet = session
+            .get_api_socket_packet(SocketPacketType::Messages, 0)
+            .unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_edit_file_subscribe",
+            socket_packet.intern_and_redact(&mut redactions, ())
+        );
+
+        let read_response = session.get_api_read(root_id).unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_edit_file_all-2",
+            read_response.intern_and_redact(&mut redactions, root_id)
+        );
+    });
+}
+
+#[test]
+fn parent_path_add_file() {
+    run_serve_test("parent_path", |session, mut redactions| {
+        let info = session.get_api_rojo().unwrap();
+        let root_id = info.root_instance_id;
+
+        assert_yaml_snapshot!("parent_path_add_file_info", redactions.redacted_yaml(info));
+
+        let read_response = session.get_api_read(root_id).unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_add_file_all",
+            read_response.intern_and_redact(&mut redactions, root_id)
+        );
+
+        fs::write(session.path().join("shared/fire.txt"), "Never Going Back").unwrap();
+
+        let socket_packet = session
+            .get_api_socket_packet(SocketPacketType::Messages, 0)
+            .unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_add_file_subscribe",
+            socket_packet.intern_and_redact(&mut redactions, ())
+        );
+
+        let read_response = session.get_api_read(root_id).unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_add_file_all-2",
+            read_response.intern_and_redact(&mut redactions, root_id)
+        );
+    });
+}
