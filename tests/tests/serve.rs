@@ -10,7 +10,7 @@ use crate::rojo_test::{
     serve_util::{deserialize_msgpack, run_serve_test, serialize_to_xml_model, TestServeSession},
 };
 
-use librojo::web_api::{ReadResponse, SerializeResponse, SocketPacketType};
+use librojo::web_api::{ReadResponse, SerializeResponse, SocketPacketBody, SocketPacketType};
 
 #[test]
 fn rejects_dns_rebinding_requests() {
@@ -868,6 +868,37 @@ fn assert_nested_folder_removed(session: &TestServeSession, folder: &str) {
     assert_eq!(count_instances(&read_response, "deep"), 1);
     assert_eq!(count_instances(&read_response, "file"), 1);
     assert_eq!(count_instances(&read_response, "keep"), 2);
+}
+
+/// The plugin picks its cursor when it reads the tree, then waits for the user
+/// to accept the initial sync before opening its socket. Anything added and
+/// removed in between is replayed against a tree that no longer has it.
+#[test]
+fn socket_replays_patch_for_removed_instance() {
+    run_serve_test("remove_file", |session, _| {
+        let root_id = session.get_api_rojo().unwrap().root_instance_id;
+        let temp_path = session.path().join("src/temp.txt");
+
+        fs::write(&temp_path, "Temporary").unwrap();
+        session.wait_for_read(root_id, |response| count_instances(response, "temp") == 1);
+
+        fs::remove_file(&temp_path).unwrap();
+        session.wait_for_read(root_id, |response| count_instances(response, "temp") == 0);
+
+        let socket_packet = session
+            .get_api_socket_packet(SocketPacketType::Messages, 0)
+            .unwrap();
+        let SocketPacketBody::Messages(packet) = socket_packet.body;
+
+        assert!(packet
+            .messages
+            .iter()
+            .all(|message| message.added.is_empty()));
+        assert!(packet
+            .messages
+            .iter()
+            .any(|message| !message.removed.is_empty()));
+    });
 }
 
 fn count_instances(response: &ReadResponse, name: &str) -> usize {

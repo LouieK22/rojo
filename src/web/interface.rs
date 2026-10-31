@@ -37,12 +37,19 @@ pub struct SubscribeMessage<'a> {
 }
 
 impl<'a> SubscribeMessage<'a> {
+    /// `patch` may have been queued a long time ago, so an instance it added or
+    /// updated can already be gone from `tree`. Those instances are skipped
+    /// here because whatever removed them is also in the queue and tells the
+    /// client they're gone.
     pub(crate) fn from_patch_update(tree: &'a RojoTree, patch: AppliedPatchSet) -> Self {
         let removed = patch.removed;
 
         let mut added = HashMap::new();
         for id in patch.added {
-            let instance = tree.get_instance(id).unwrap();
+            let Some(instance) = tree.get_instance(id) else {
+                continue;
+            };
+
             added.insert(id, Instance::from_rojo_instance(instance));
 
             for instance in tree.descendants(id) {
@@ -53,6 +60,7 @@ impl<'a> SubscribeMessage<'a> {
         let updated = patch
             .updated
             .into_iter()
+            .filter(|update| tree.get_instance(update.id).is_some())
             .map(|update| {
                 let changed_metadata = update
                     .changed_metadata
@@ -311,4 +319,33 @@ pub enum ErrorResponseKind {
     BadRequest,
     Forbidden,
     InternalError,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use crate::snapshot::{AppliedPatchUpdate, InstanceSnapshot};
+
+    #[test]
+    fn from_patch_update_skips_instances_missing_from_tree() {
+        let tree = RojoTree::new(InstanceSnapshot::new());
+        let existing_id = tree.get_root_id();
+        let missing_id = Ref::new();
+
+        let mut patch = AppliedPatchSet::new();
+        patch.removed.push(missing_id);
+        patch.added.extend([existing_id, missing_id]);
+        patch.updated.extend([
+            AppliedPatchUpdate::new(existing_id),
+            AppliedPatchUpdate::new(missing_id),
+        ]);
+
+        let message = SubscribeMessage::from_patch_update(&tree, patch);
+
+        assert_eq!(message.removed, [missing_id]);
+        assert_eq!(message.added.keys().collect::<Vec<_>>(), [&existing_id]);
+        assert_eq!(message.updated.len(), 1);
+        assert_eq!(message.updated[0].id, existing_id);
+    }
 }
