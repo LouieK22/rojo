@@ -145,6 +145,10 @@ fn patch_set_affects_sourcemap(
 ) -> bool {
     let tree = session.tree();
 
+    // These patches may have been queued a long time ago, so an instance they
+    // added or updated can already be gone from the tree. Whatever removed it is
+    // also in the queue, and rule 1 below rewrites the sourcemap for that patch.
+    //
     // A sourcemap has probably changed when:
     patch_set.par_iter().any(|set| {
         // 1. An instance was removed, in which case it will no
@@ -152,10 +156,8 @@ fn patch_set_affects_sourcemap(
         !set.removed.is_empty()
             // 2. A newly added instance passes the filter
             || set.added.iter().any(|referent| {
-                let instance = tree
-                    .get_instance(*referent)
-                    .expect("instance did not exist when updating sourcemap");
-                filter(&instance)
+                tree.get_instance(*referent)
+                    .is_some_and(|instance| filter(&instance))
             })
             // 3. An existing instance has its class name, name,
             // or file paths changed, and passes the filter
@@ -163,14 +165,10 @@ fn patch_set_affects_sourcemap(
                 let changed = updated.changed_class_name.is_some()
                     || updated.changed_name.is_some()
                     || updated.changed_metadata.is_some();
-                if changed {
-                    let instance = tree
+                changed
+                    && tree
                         .get_instance(updated.id)
-                        .expect("instance did not exist when updating sourcemap");
-                    filter(&instance)
-                } else {
-                    false
-                }
+                        .is_some_and(|instance| filter(&instance))
             })
     })
 }
@@ -264,10 +262,44 @@ fn write_sourcemap(
 
 #[cfg(test)]
 mod test {
-    use crate::cli::sourcemap::SourcemapNode;
+    use crate::cli::sourcemap::{filter_nothing, patch_set_affects_sourcemap, SourcemapNode};
     use crate::cli::SourcemapCommand;
+    use crate::serve_session::ServeSession;
+    use crate::snapshot::{AppliedPatchSet, AppliedPatchUpdate};
     use insta::internals::Content;
+    use memofs::Vfs;
+    use rbx_dom_weak::types::Ref;
     use std::path::Path;
+
+    #[test]
+    fn patches_for_missing_instances_do_not_affect_sourcemap() {
+        let dir = tempfile::tempdir().unwrap();
+        fs_err::write(
+            dir.path().join("default.project.json"),
+            r#"{ "name": "test", "tree": { "$className": "Folder" } }"#,
+        )
+        .unwrap();
+
+        let vfs = Vfs::new_default().unwrap();
+        vfs.set_watch_enabled(false);
+        let session = ServeSession::new(vfs, dir.path()).unwrap();
+
+        let missing_id = Ref::new();
+
+        let mut added = AppliedPatchSet::new();
+        added.added.push(missing_id);
+
+        let mut update = AppliedPatchUpdate::new(missing_id);
+        update.changed_name = Some("Renamed".to_owned());
+        let mut updated = AppliedPatchSet::new();
+        updated.updated.push(update);
+
+        assert!(!patch_set_affects_sourcemap(
+            &session,
+            &[added, updated],
+            filter_nothing
+        ));
+    }
 
     #[test]
     fn maps_relative_paths() {

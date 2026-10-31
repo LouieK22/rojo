@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use hyper_tungstenite::tungstenite::{connect, Message};
+use hyper_tungstenite::tungstenite::{connect, stream::MaybeTlsStream, Message};
 use rbx_dom_weak::types::Ref;
 
 use serde::{Deserialize, Serialize};
@@ -178,6 +178,29 @@ impl TestServeSession {
         Ok(deserialize_msgpack(&body).expect("Server returned malformed response"))
     }
 
+    pub fn wait_for_read(
+        &self,
+        id: Ref,
+        condition: impl Fn(&ReadResponse) -> bool,
+    ) -> ReadResponse<'_> {
+        let timeout = Duration::from_secs(10);
+        let start = std::time::Instant::now();
+
+        loop {
+            let response = self.get_api_read(id).unwrap();
+
+            if condition(&response) {
+                return response;
+            }
+
+            if start.elapsed() > timeout {
+                panic!("Timeout waiting for condition on /api/read");
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     pub fn get_api_socket_packet(
         &self,
         packet_type: SocketPacketType,
@@ -190,6 +213,10 @@ impl TestServeSession {
         // Wait for messages with a timeout
         let timeout = Duration::from_secs(10);
         let start = std::time::Instant::now();
+
+        if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
+            stream.set_read_timeout(Some(timeout))?;
+        }
 
         loop {
             if start.elapsed() > timeout {
@@ -215,7 +242,10 @@ impl TestServeSession {
                     continue;
                 }
                 Err(hyper_tungstenite::tungstenite::Error::Io(e))
-                    if e.kind() == std::io::ErrorKind::WouldBlock =>
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
                 {
                     // No data available yet, sleep a bit and try again
                     thread::sleep(Duration::from_millis(100));

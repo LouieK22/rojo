@@ -1,0 +1,12 @@
+{
+  "name": "remove_nested_folder",
+  "tree": {
+    "$className": "Folder",
+    "Local": {
+      "$path": "src"
+    },
+    "Shared": {
+      "$path": "sibling/../shared"
+    }
+  }
+}

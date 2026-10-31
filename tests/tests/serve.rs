@@ -7,10 +7,10 @@ use tempfile::tempdir;
 
 use crate::rojo_test::{
     internable::InternAndRedact,
-    serve_util::{deserialize_msgpack, run_serve_test, serialize_to_xml_model},
+    serve_util::{deserialize_msgpack, run_serve_test, serialize_to_xml_model, TestServeSession},
 };
 
-use librojo::web_api::{SerializeResponse, SocketPacketType};
+use librojo::web_api::{ReadResponse, SerializeResponse, SocketPacketBody, SocketPacketType};
 
 #[test]
 fn rejects_dns_rebinding_requests() {
@@ -774,4 +774,137 @@ fn forced_parent() {
         let model = serialize_to_xml_model(&serialize_response, &redactions);
         assert_snapshot!("forced_parent_serialize_model", model);
     });
+}
+
+#[test]
+fn parent_path_edit_file() {
+    run_serve_test("parent_path", |session, mut redactions| {
+        let info = session.get_api_rojo().unwrap();
+        let root_id = info.root_instance_id;
+
+        assert_yaml_snapshot!("parent_path_edit_file_info", redactions.redacted_yaml(info));
+
+        let read_response = session.get_api_read(root_id).unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_edit_file_all",
+            read_response.intern_and_redact(&mut redactions, root_id)
+        );
+
+        fs::write(session.path().join("shared/fire.txt"), "Watch Me").unwrap();
+
+        let socket_packet = session
+            .get_api_socket_packet(SocketPacketType::Messages, 0)
+            .unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_edit_file_subscribe",
+            socket_packet.intern_and_redact(&mut redactions, ())
+        );
+
+        let read_response = session.get_api_read(root_id).unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_edit_file_all-2",
+            read_response.intern_and_redact(&mut redactions, root_id)
+        );
+    });
+}
+
+#[test]
+fn parent_path_add_file() {
+    run_serve_test("parent_path", |session, mut redactions| {
+        let info = session.get_api_rojo().unwrap();
+        let root_id = info.root_instance_id;
+
+        assert_yaml_snapshot!("parent_path_add_file_info", redactions.redacted_yaml(info));
+
+        let read_response = session.get_api_read(root_id).unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_add_file_all",
+            read_response.intern_and_redact(&mut redactions, root_id)
+        );
+
+        fs::write(session.path().join("shared/fire.txt"), "Never Going Back").unwrap();
+
+        let socket_packet = session
+            .get_api_socket_packet(SocketPacketType::Messages, 0)
+            .unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_add_file_subscribe",
+            socket_packet.intern_and_redact(&mut redactions, ())
+        );
+
+        let read_response = session.get_api_read(root_id).unwrap();
+        assert_yaml_snapshot!(
+            "parent_path_add_file_all-2",
+            read_response.intern_and_redact(&mut redactions, root_id)
+        );
+    });
+}
+
+#[test]
+fn remove_nested_folder() {
+    run_serve_test("remove_nested_folder", |session, _| {
+        assert_nested_folder_removed(&session, "src/nested");
+    });
+}
+
+#[test]
+fn parent_path_remove_nested_folder() {
+    run_serve_test("remove_nested_folder", |session, _| {
+        assert_nested_folder_removed(&session, "shared/nested");
+    });
+}
+
+/// A recursive delete removes children first, so their parents are already gone
+/// when their events are handled. The number of patches this produces is functionally
+/// a gacha game, which is why we just poll for results instead!
+fn assert_nested_folder_removed(session: &TestServeSession, folder: &str) {
+    let root_id = session.get_api_rojo().unwrap().root_instance_id;
+
+    fs::remove_dir_all(session.path().join(folder)).unwrap();
+
+    let read_response =
+        session.wait_for_read(root_id, |response| count_instances(response, "nested") == 1);
+
+    assert_eq!(count_instances(&read_response, "deep"), 1);
+    assert_eq!(count_instances(&read_response, "file"), 1);
+    assert_eq!(count_instances(&read_response, "keep"), 2);
+}
+
+/// The plugin picks its cursor when it reads the tree, then waits for the user
+/// to accept the initial sync before opening its socket. Anything added and
+/// removed in between is replayed against a tree that no longer has it.
+#[test]
+fn socket_replays_patch_for_removed_instance() {
+    run_serve_test("remove_file", |session, _| {
+        let root_id = session.get_api_rojo().unwrap().root_instance_id;
+        let temp_path = session.path().join("src/temp.txt");
+
+        fs::write(&temp_path, "Temporary").unwrap();
+        session.wait_for_read(root_id, |response| count_instances(response, "temp") == 1);
+
+        fs::remove_file(&temp_path).unwrap();
+        session.wait_for_read(root_id, |response| count_instances(response, "temp") == 0);
+
+        let socket_packet = session
+            .get_api_socket_packet(SocketPacketType::Messages, 0)
+            .unwrap();
+        let SocketPacketBody::Messages(packet) = socket_packet.body;
+
+        assert!(packet
+            .messages
+            .iter()
+            .all(|message| message.added.is_empty()));
+        assert!(packet
+            .messages
+            .iter()
+            .any(|message| !message.removed.is_empty()));
+    });
+}
+
+fn count_instances(response: &ReadResponse, name: &str) -> usize {
+    response
+        .instances
+        .values()
+        .filter(|instance| instance.name == name)
+        .count()
 }

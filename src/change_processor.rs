@@ -2,7 +2,7 @@ use crossbeam_channel::{select, Receiver, RecvError, Sender};
 use jod_thread::JoinHandle;
 use memofs::{IoResultExt, Vfs, VfsEvent};
 use rbx_dom_weak::types::{Ref, Variant};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{
     fs,
     sync::{Arc, Mutex},
@@ -168,16 +168,8 @@ impl JobThreadContext {
         // For a given VFS event, we might have many changes to different parts
         // of the tree. Calculate and apply all of these changes.
         let applied_patches = match event {
-            VfsEvent::Create(path) | VfsEvent::Write(path) => {
-                self.apply_patches(self.vfs.canonicalize(&path).unwrap())
-            }
-            VfsEvent::Remove(path) => {
-                // MemoFS does not track parent removals yet, so we can canonicalize
-                // the parent path safely and then append the removed path's file name.
-                let parent = path.parent().unwrap();
-                let file_name = path.file_name().unwrap();
-                let parent_normalized = self.vfs.canonicalize(parent).unwrap();
-                self.apply_patches(parent_normalized.join(file_name))
+            VfsEvent::Create(path) | VfsEvent::Write(path) | VfsEvent::Remove(path) => {
+                self.apply_patches(canonicalize_event_path(&self.vfs, &path))
             }
             _ => {
                 log::warn!("Unhandled VFS event: {:?}", event);
@@ -294,6 +286,20 @@ impl JobThreadContext {
     }
 }
 
+fn canonicalize_event_path(vfs: &Vfs, path: &Path) -> PathBuf {
+    for ancestor in path.ancestors() {
+        if let Ok(canonical) = vfs.canonicalize(ancestor) {
+            let missing = path
+                .strip_prefix(ancestor)
+                .expect("a path should start with its ancestors");
+
+            return canonical.join(missing);
+        }
+    }
+
+    path.to_path_buf()
+}
+
 fn compute_and_apply_changes(tree: &mut RojoTree, vfs: &Vfs, id: Ref) -> Option<AppliedPatchSet> {
     let metadata = tree
         .get_metadata(id)
@@ -382,4 +388,49 @@ fn compute_and_apply_changes(tree: &mut RojoTree, vfs: &Vfs, id: Ref) -> Option<
     };
 
     Some(applied_patch_set)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use memofs::{InMemoryFs, VfsSnapshot};
+
+    fn vfs_with_file() -> Vfs {
+        let mut imfs = InMemoryFs::new();
+        imfs.load_snapshot(
+            "/root/dir",
+            VfsSnapshot::dir([("file.txt", VfsSnapshot::file("contents"))]),
+        )
+        .unwrap();
+
+        Vfs::new(imfs)
+    }
+
+    #[test]
+    fn canonicalize_event_path_existing() {
+        assert_eq!(
+            canonicalize_event_path(&vfs_with_file(), Path::new("/root/other/../dir/file.txt")),
+            Path::new("/root/dir/file.txt")
+        );
+    }
+
+    #[test]
+    fn canonicalize_event_path_missing_file() {
+        assert_eq!(
+            canonicalize_event_path(&vfs_with_file(), Path::new("/root/other/../dir/gone.txt")),
+            Path::new("/root/dir/gone.txt")
+        );
+    }
+
+    #[test]
+    fn canonicalize_event_path_missing_parents() {
+        assert_eq!(
+            canonicalize_event_path(
+                &vfs_with_file(),
+                Path::new("/root/other/../dir/gone/deeper/gone.txt")
+            ),
+            Path::new("/root/dir/gone/deeper/gone.txt")
+        );
+    }
 }
